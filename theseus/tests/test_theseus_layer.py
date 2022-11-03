@@ -84,7 +84,7 @@ def create_qf_theseus_layer(
     cost_weight=th.ScaleCostWeight(1.0),
     nonlinear_optimizer_cls=th.GaussNewton,
     linear_solver_cls=th.CholeskyDenseSolver,
-    max_iterations=10,
+    max_iterations=50,
     use_learnable_error=False,
     force_vectorization=False,
 ):
@@ -190,7 +190,7 @@ def _run_optimizer_test(
     optimizer_kwargs,
     cost_weight_model,
     use_learnable_error=False,
-    verbose=True,
+    verbose=False,
     learning_method="default",
     force_vectorization=False,
 ):
@@ -230,11 +230,25 @@ def _run_optimizer_test(
         force_vectorization=force_vectorization,
     )
     layer_ref.to(device)
+
     with torch.no_grad():
-        input_values = {"coefficients": torch.ones(batch_size, 2, device=device) * 0.75}
-        target_vars, _ = layer_ref.forward(
+        input_values = {
+            "coefficients": torch.cat(
+                [
+                    torch.ones(batch_size, 1, device=device) * 0.75,
+                    torch.ones(batch_size, 1, device=device) * 7,
+                ],
+                dim=1,
+            )
+        }
+        target_vars, info = layer_ref.forward(
             input_values, optimizer_kwargs={**optimizer_kwargs, **{"verbose": verbose}}
         )
+
+    # print(l)
+    print("target_vars:", target_vars)
+
+    # exit()
 
     # Now create another that starts with a random cost weight and use backpropagation to
     # find the cost weight whose solution matches the above target
@@ -290,7 +304,13 @@ def _run_optimizer_test(
         "learnable_err_param" if use_learnable_error else "cost_weight_values"
     )
     input_values = {
-        "coefficients": torch.ones(batch_size, 2, device=device) * 0.75,
+        "coefficients": torch.cat(
+            [
+                torch.ones(batch_size, 1, device=device) * 0.75,
+                torch.ones(batch_size, 1, device=device) * 7,
+            ],
+            dim=1,
+        ),
         cost_weight_param_name: cost_weight_fn(),
     }
 
@@ -298,6 +318,9 @@ def _run_optimizer_test(
         pred_vars, info = layer_to_learn.forward(
             input_values, optimizer_kwargs=optimizer_kwargs
         )
+
+        # print("init pred:", pred_vars, "init info:", info)
+
         loss0 = F.mse_loss(
             pred_vars["coefficients"], target_vars["coefficients"]
         ).item()
@@ -312,12 +335,20 @@ def _run_optimizer_test(
     for i in range(200):
         optimizer.zero_grad()
         input_values = {
-            "coefficients": torch.ones(batch_size, 2, device=device) * 0.75,
+            "coefficients": torch.cat(
+                [
+                    torch.ones(batch_size, 1, device=device) * 0.75,
+                    torch.ones(batch_size, 1, device=device) * 7,
+                ],
+                dim=1,
+            ),
             cost_weight_param_name: cost_weight_fn(),
         }
         pred_vars, info = layer_to_learn.forward(
             input_values, optimizer_kwargs={**optimizer_kwargs, **{"verbose": verbose}}
         )
+
+        # print("pred:", pred_vars, "info:", info.best_solution)
         assert not (
             (info.status == th.NonlinearOptimizerStatus.START)
             | (info.status == th.NonlinearOptimizerStatus.FAIL)
@@ -357,6 +388,7 @@ def _run_optimizer_test(
         else:
             loss = mse_loss
 
+        print("iters:", i, "loss: ", loss.item())
         loss.backward()
         optimizer.step()
 
@@ -366,20 +398,20 @@ def _run_optimizer_test(
     assert solved
 
 
-@pytest.mark.parametrize("nonlinear_optim_cls", [th.GaussNewton, th.LevenbergMarquardt])
+@pytest.mark.parametrize("nonlinear_optim_cls", [th.DCem])
 @pytest.mark.parametrize(
     "lin_solver_cls",
-    [th.CholeskyDenseSolver, th.LUDenseSolver, th.CholmodSparseSolver],
+    [th.DCemSolver],
 )
-@pytest.mark.parametrize("use_learnable_error", [True, False])
-@pytest.mark.parametrize("cost_weight_model", ["softmax", "mlp"])
-@pytest.mark.parametrize("learning_method", ["default", "leo"])
+@pytest.mark.parametrize("use_learnable_error", [False])
+@pytest.mark.parametrize("cost_weight_model", ["mlp"])
+@pytest.mark.parametrize("learning_method", ["default"])
 def test_backward(
-    nonlinear_optim_cls,
-    lin_solver_cls,
-    use_learnable_error,
-    cost_weight_model,
-    learning_method,
+    nonlinear_optim_cls=th.DCem,
+    lin_solver_cls=th.DCemSolver,
+    use_learnable_error=False,
+    cost_weight_model="mlp",
+    learning_method="default",
 ):
     optim_kwargs = {} if nonlinear_optim_cls == th.GaussNewton else {"damping": 0.01}
     if learning_method == "leo":
@@ -390,7 +422,9 @@ def test_backward(
         if cost_weight_model == "softmax":
             return
     # test both vectorization on/off
-    force_vectorization = torch.rand(1).item() > 0.5
+    # force_vectorization = torch.rand(1).item() > 0.5
+    force_vectorization = False
+    # force_vectorization = True
     _run_optimizer_test(
         nonlinear_optim_cls,
         lin_solver_cls,
@@ -524,3 +558,6 @@ def test_no_layer_kwargs():
 
     with pytest.raises(TypeError):
         layer.forward(input_values, auxiliary_vars=None)
+
+
+test_backward()
