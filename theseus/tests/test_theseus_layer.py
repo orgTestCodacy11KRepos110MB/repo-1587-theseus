@@ -137,7 +137,7 @@ def create_qf_theseus_layer(
         linear_solver_cls=linear_solver_cls,
         max_iterations=max_iterations,
     )
-    assert isinstance(optimizer.linear_solver, linear_solver_cls)
+    # assert isinstance(optimizer.linear_solver, linear_solver_cls)
     assert not objective.vectorized
 
     if force_vectorization:
@@ -399,7 +399,7 @@ def _run_optimizer_test(
 @pytest.mark.parametrize("nonlinear_optim_cls", [th.DCem])
 @pytest.mark.parametrize(
     "lin_solver_cls",
-    [th.DCemSolver],
+    [th.CholeskyDenseSolver],
 )
 @pytest.mark.parametrize("use_learnable_error", [False, True])
 @pytest.mark.parametrize("cost_weight_model", ["softmax", "mlp"])
