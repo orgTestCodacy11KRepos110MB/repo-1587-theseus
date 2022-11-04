@@ -84,7 +84,7 @@ def create_qf_theseus_layer(
     cost_weight=th.ScaleCostWeight(1.0),
     nonlinear_optimizer_cls=th.GaussNewton,
     linear_solver_cls=th.CholeskyDenseSolver,
-    max_iterations=50,
+    max_iterations=30,
     use_learnable_error=False,
     force_vectorization=False,
 ):
@@ -245,8 +245,7 @@ def _run_optimizer_test(
             input_values, optimizer_kwargs={**optimizer_kwargs, **{"verbose": verbose}}
         )
 
-    # print(l)
-    print("target_vars:", target_vars)
+    # print("target_vars:", target_vars)
 
     # exit()
 
@@ -319,10 +318,8 @@ def _run_optimizer_test(
             input_values, optimizer_kwargs=optimizer_kwargs
         )
 
-        # print("init pred:", pred_vars, "init info:", info)
-
         loss0 = F.mse_loss(
-            pred_vars["coefficients"], target_vars["coefficients"]
+            pred_vars["coefficients"].abs(), target_vars["coefficients"].abs()
         ).item()
         assert not (
             (info.status == th.NonlinearOptimizerStatus.START)
@@ -348,13 +345,14 @@ def _run_optimizer_test(
             input_values, optimizer_kwargs={**optimizer_kwargs, **{"verbose": verbose}}
         )
 
-        # print("pred:", pred_vars, "info:", info.best_solution)
         assert not (
             (info.status == th.NonlinearOptimizerStatus.START)
             | (info.status == th.NonlinearOptimizerStatus.FAIL)
         ).all()
 
-        mse_loss = F.mse_loss(pred_vars["coefficients"], target_vars["coefficients"])
+        mse_loss = F.mse_loss(
+            pred_vars["coefficients"].abs(), target_vars["coefficients"].abs()
+        )
 
         if learning_method == "leo":
             # groundtruth cost
@@ -392,7 +390,7 @@ def _run_optimizer_test(
         loss.backward()
         optimizer.step()
 
-        if mse_loss.item() / loss0 < 1e-2:
+        if mse_loss.item() / loss0 < 5e-2:
             solved = True
             break
     assert solved
@@ -403,15 +401,15 @@ def _run_optimizer_test(
     "lin_solver_cls",
     [th.DCemSolver],
 )
-@pytest.mark.parametrize("use_learnable_error", [False])
-@pytest.mark.parametrize("cost_weight_model", ["mlp"])
-@pytest.mark.parametrize("learning_method", ["default"])
+@pytest.mark.parametrize("use_learnable_error", [False, True])
+@pytest.mark.parametrize("cost_weight_model", ["softmax", "mlp"])
+@pytest.mark.parametrize("learning_method", ["default", "leo"])
 def test_backward(
-    nonlinear_optim_cls=th.DCem,
-    lin_solver_cls=th.DCemSolver,
-    use_learnable_error=False,
-    cost_weight_model="mlp",
-    learning_method="default",
+    nonlinear_optim_cls,
+    lin_solver_cls,
+    use_learnable_error,
+    cost_weight_model,
+    learning_method,
 ):
     optim_kwargs = {} if nonlinear_optim_cls == th.GaussNewton else {"damping": 0.01}
     if learning_method == "leo":
@@ -421,10 +419,11 @@ def test_backward(
         # LEO fails to work in this case, not sure why
         if cost_weight_model == "softmax":
             return
+
+        if nonlinear_optim_cls == th.DCem:
+            return
     # test both vectorization on/off
-    # force_vectorization = torch.rand(1).item() > 0.5
-    force_vectorization = False
-    # force_vectorization = True
+    force_vectorization = torch.rand(1).item() > 0.5
     _run_optimizer_test(
         nonlinear_optim_cls,
         lin_solver_cls,
@@ -558,6 +557,3 @@ def test_no_layer_kwargs():
 
     with pytest.raises(TypeError):
         layer.forward(input_values, auxiliary_vars=None)
-
-
-test_backward()
