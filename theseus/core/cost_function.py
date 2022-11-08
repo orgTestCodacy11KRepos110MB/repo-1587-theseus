@@ -4,7 +4,9 @@
 # LICENSE file in the root directory of this source tree.
 
 import abc
+import contextlib
 from enum import Enum
+from itertools import chain
 from typing import Callable, List, Optional, Sequence, Tuple, Union, cast
 
 import torch
@@ -117,11 +119,24 @@ class AutogradMode(Enum):
         return mode
 
 
+@contextlib.contextmanager
+def _tmp_tensors(vars: Sequence[Variable]):
+    tensors = [v.tensor for v in vars]
+    yield
+    for (v, tensor) in zip(vars, tensors):
+        v.update(tensor)
+
+
 # The error function is assumed to receive variables in the format
 #    err_fn(
 #       optim_vars=(optim_vars[0].tensor, ..., optim_vars[N - 1].tensor),
 #       aux_vars=(aux_vars[0].tensor, ..., aux_vars[M -1].tensor)
 #   )
+#
+# When using `autograd_mode="vmap"` err_fn should not have side effects
+# deriving from the tensor values of optim_vars and aux_vars, as this
+# might result in functorch errors. See the first sentence here
+# https://pytorch.org/functorch/stable/ux_limitations.html#general-limitations
 #
 # The user also needs to explicitly specify the output's dimension
 class AutoDiffCostFunction(CostFunction):
@@ -221,7 +236,7 @@ class AutoDiffCostFunction(CostFunction):
             assert len(optim_vars_tensors_) == len(tmp_optim_vars)
 
             # disable tensor checks and other operations that are incompatible with functorch
-            with no_lie_group_check():
+            with no_lie_group_check(silent=True):
                 for i, tensor in enumerate(optim_vars_tensors_):
                     tmp_optim_vars[i].update(tensor.unsqueeze(0))
 
@@ -240,16 +255,42 @@ class AutoDiffCostFunction(CostFunction):
         aux_tensors: Tuple[torch.Tensor, ...],
         jac_fn: Callable,
     ) -> Tuple[torch.Tensor, ...]:
+        def _expand_all(
+            tensors: Tuple[torch.Tensor, ...], batch_size: int
+        ) -> Tuple[torch.Tensor, ...]:
+            return tuple(
+                t if t.shape[0] == batch_size else t.expand((batch_size,) + t.shape[1:])
+                for t in tensors
+            )
+
+        batch_sizes = set(t.shape[0] for t in chain(optim_tensors, aux_tensors))
+        # Using an assert instead of exception because Objective already
+        # takes care of throwing an appropriate error message if this happens
+        assert len(batch_sizes) == 1 or (
+            len(batch_sizes) == 2 and min(batch_sizes) == 1
+        )
+        batch_size = max(batch_sizes)
+        optim_tensors = _expand_all(optim_tensors, batch_size)
+        aux_tensors = _expand_all(aux_tensors, batch_size)
         return vmap(jacrev(jac_fn, argnums=0))(optim_tensors, aux_tensors)
 
     def jacobians(self) -> Tuple[List[torch.Tensor], torch.Tensor]:
         err, optim_vars, aux_vars = self._compute_error()
         if self._autograd_mode == AutogradMode.VMAP:
-            jacobians_full = self._compute_autograd_jacobian_vmap(
-                tuple(v.tensor for v in optim_vars),
-                tuple(v.tensor for v in aux_vars),
-                self._make_jac_fn_vmap(self._tmp_optim_vars, self._tmp_aux_vars),
-            )
+            # functorch doesn't allow BatchedTensors created inside their transforms
+            # to be accessed outside that context. Since our tmp containers get
+            # populated inside the vmap(jacrev) calculation, this would result in
+            # errors when calling functions like copy() or to() after
+            # vmap has been run at least once.
+            # The _tmp_tensors context managers stores the (regular) tensors the vars
+            # had before entering and restores them on exit, thus dereferencing
+            # the temporary BatchedTensors.
+            with _tmp_tensors(self._tmp_optim_vars), _tmp_tensors(self._tmp_aux_vars):
+                jacobians_full = self._compute_autograd_jacobian_vmap(
+                    tuple(v.tensor for v in optim_vars),
+                    tuple(v.tensor for v in aux_vars),
+                    self._make_jac_fn_vmap(self._tmp_optim_vars, self._tmp_aux_vars),
+                )
         elif self._autograd_mode == AutogradMode.LOOP_BATCH:
             jacobians_raw_loop: List[Tuple[torch.Tensor, ...]] = []
             for n in range(optim_vars[0].shape[0]):

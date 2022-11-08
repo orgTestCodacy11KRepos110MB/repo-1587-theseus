@@ -18,6 +18,7 @@ from theseus.core import (
     Variable,
     Vectorize,
 )
+from theseus.constants import __FROM_THESEUS_LAYER_TOKEN__
 from theseus.geometry import LieGroup, Manifold
 from theseus.optimizer import Optimizer, OptimizerInfo
 from theseus.optimizer.linear import LinearSolver
@@ -116,7 +117,7 @@ class TheseusLayer(nn.Module):
             mean=torch.zeros((n_vars, n_samples), device=delta.device),
             std=torch.ones((n_vars, n_samples), device=delta.device),
         )
-        delta_samples = (torch.triangular_solve(y, sqrt_AtA).solution) + (
+        delta_samples = (torch.linalg.solve_triangular(sqrt_AtA, y, upper=True)) + (
             delta.unsqueeze(-1)
         ).repeat(1, 1, n_samples)
 
@@ -146,8 +147,14 @@ class TheseusLayer(nn.Module):
         return self.objective.dtype
 
 
-def _forward(objective, optimizer, optimizer_kwargs, input_tensors):
+def _forward(
+    objective: Objective,
+    optimizer: Optimizer,
+    optimizer_kwargs: Dict[str, Any],
+    input_tensors: Dict[str, torch.Tensor],
+):
     objective.update(input_tensors)
+    optimizer_kwargs[__FROM_THESEUS_LAYER_TOKEN__] = True
     info = optimizer.optimize(**optimizer_kwargs)
     vars = [var.tensor for var in objective.optim_vars.values()]
     return vars, info
