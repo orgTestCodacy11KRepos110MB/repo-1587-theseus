@@ -29,11 +29,20 @@ except ModuleNotFoundError:
     sys.exit(1)
 
 
+def _format(line):
+    line = line.split()[-1]
+    egg_name = line.split("#egg=")[-1]
+    fragment = line.split("#egg=")[0]
+    return f"{egg_name} @ {fragment}"
+
+
 def parse_requirements_file(path):
     with open(path) as f:
         reqs = []
         for line in f:
             line = line.strip()
+            if line[0] == "-":
+                reqs.append(_format(line))
             reqs.append(line.split("==")[0])
     return reqs
 
